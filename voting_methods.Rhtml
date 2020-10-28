@@ -1,0 +1,836 @@
+<!--put visualization here, so it is first thing people see; maybe put second one below-->
+
+<script
+  src="https://code.jquery.com/jquery-3.5.1.min.js"
+  integrity="sha256-9/aliU8dGd2tb6OSsuzixeV4y/faTqgFtohetphbbj0="
+  crossorigin="anonymous"></script>
+
+<p> If you would like to respond to the survey for a future update of this project, <a href="https://forms.gle/1k4UdBNn347GZjSG6" target="_blank" id="candy_survey_out">click here</a> to open a survey form. This will help tremendously with the US map visualizations.</p>
+
+<!--begin.rcode setup, echo=FALSE, warning=FALSE, message=FALSE, cache=TRUE
+library(tidyverse)
+library(usmap)
+source('voting_functions.r')
+source('raking.r')
+source('constants.r')
+
+candy_df = read_csv(
+  'data/candy_cleaned.csv'
+)
+
+candy_df$weight = rake_data(
+  as.data.frame(candy_df),
+  c('Gender','AgeGroup','State'),
+  demographic_stats,
+  max_iter = 5,
+  verbose=F
+)
+
+
+# voting calculationss
+# national
+
+national_likemat = build_like_matrix(candy_df %>% select(4:90, weight), weight_col='weight')$molten_data
+
+tiebreaker_mat = national_likemat %>% transmute(Candy, ranking=likes_ranking)
+
+national_borda_count = build_borda_count_matrix(candy_df %>% select(4:90, weight), weight_col='weight')$molten_data
+
+national_plurality = rank_iterate(candy_df %>% select(4:90, weight), top_n=5, weight_col='weight', max_iter=1) %>%
+    rename(plurality_ranking=runoff_ranking, plurality_votes=value)
+
+national_instant_runoff = rank_iterate(candy_df %>% select(4:90, weight), top_n=2, weight_col='weight', max_iter=Inf) %>%
+    rename(runoff_votes=value)
+
+# extra runoff pics
+national_instant_runoff3 = rank_iterate(candy_df %>% select(4:90, weight), top_n=3, weight_col='weight', max_iter=Inf) %>%
+    rename(runoff_votes=value)
+
+national_instant_runoff4 = rank_iterate(candy_df %>% select(4:90, weight), top_n=4, weight_col='weight', max_iter=Inf) %>%
+    rename(runoff_votes=value)
+
+national_instant_runoff5 = rank_iterate(candy_df %>% select(4:90, weight), top_n=5, weight_col='weight', max_iter=Inf) %>%
+    rename(runoff_votes=value)
+
+national_instant_runoff6 = rank_iterate(candy_df %>% select(4:90, weight), top_n=6, weight_col='weight', max_iter=Inf) %>%
+    rename(runoff_votes=value)
+
+N_RESPONSES = nrow(candy_df)
+
+runoffs_combined = bind_rows(
+  national_instant_runoff %>% mutate(selection=2),
+  national_instant_runoff3 %>% mutate(selection=3),
+  national_instant_runoff4 %>% mutate(selection=4),
+  national_instant_runoff5 %>% mutate(selection=5),
+  national_instant_runoff6 %>% mutate(selection=6)
+) %>%
+  mutate(value  = runoff_votes/N_RESPONSES)
+
+for (i in 2:6){
+  sub_df = runoffs_combined %>%
+     filter(selection==i) %>%
+     mutate(
+       visibility=0
+     )
+
+  if (i < 6)
+    sub_df = bind_rows(
+      sub_df,
+      data.frame(
+        runoff_ranking = 10 * (1:(6-i)),
+        visibility=0,
+        Candy=strrep(' ', (1:(6-i)))
+      )
+    )
+
+
+  max_x = max(runoffs_combined$value)
+  fpng(sprintf('national_instant_runoff_%s.png', i))
+  print(
+   ggplot(sub_df %>%
+            arrange(-runoff_ranking) %>%
+               mutate(
+                 Candy=forcats::as_factor(Candy)
+                 )
+             ) +
+        geom_bar(aes(x=Candy, y=value, fill=Candy), stat='identity') +
+        geom_label(aes(x=Candy, y=value, label=paste0('#',runoff_ranking)), hjust='left') +
+        scale_fill_manual('Candy', values=candy_colors) +
+        ylab(sprintf('Instant Runoff Votes (top %s)', i)) +
+        ggtitle(sprintf('Favorite Candies in US Chosen by Instant Runoff (top %s)', i)) +
+        coord_flip() +
+        theme_bw() +
+        theme(legend.position='bottom') +
+        scale_y_continuous(label=scales::percent) +
+        expand_limits(y=c(0,max_x*1.15 + 0.01))
+
+  )
+  dev.off()
+}
+
+national_combined = national_likemat %>%
+  left_join(
+    national_borda_count,
+    by='Candy'
+  ) %>%
+  left_join(
+    national_plurality,
+    by='Candy'
+  ) %>%
+  left_join(
+    national_instant_runoff,
+    by='Candy'
+  ) %>%
+  transmute(
+    Candy=Candy,
+    `Borda Count`=borda_count/N_RESPONSES/5,
+    `Likes Count`=n_likes/N_RESPONSES,
+    `Dislikes Count`=n_dislikes/N_RESPONSES,
+    `Plurality Count`=plurality_votes/N_RESPONSES,
+    `Runoff Count`=runoff_votes/N_RESPONSES,
+    `Hybrid Likes-Dislikes Difference`=likes_dislikes_difference/N_RESPONSES
+  ) %>%
+  reshape2::melt(
+    id.var='Candy'
+  ) %>%
+  group_by(variable) %>%
+  mutate(
+    scaled_value = value/sum(value, na.rm=T),
+    ranking = case_when(
+      variable == 'Dislikes Count' ~ rank(value),
+      TRUE ~ rank(-value)
+    )
+  )
+
+
+national_plots = national_combined %>%
+  group_by(variable) %>%
+  mutate(varcopy = variable) %>%
+  group_map(
+    function(.x, ...) {
+      v = gsub('Count', 'Proportion',.x$varcopy[1])
+      max_x = .x %>% filter(ranking <= 6) %>%
+        pull(value) %>% max()
+
+
+      ggplot(.x %>%
+               filter(ranking <= 6 & value > 0) %>%
+               arrange(-ranking) %>%
+               mutate(
+                 Candy=forcats::as_factor(paste0(Candy))
+                 )
+             ) +
+        geom_bar(aes(x=Candy, y=value, fill=Candy), stat='identity') +
+        geom_label(aes(x=Candy, y=value, label=paste0('#',ranking)), hjust='left') +
+        scale_fill_manual('Candy', values=candy_colors) +
+        ylab(v) +
+        ggtitle(sprintf('Favorite Candies in US Chosen by %s', v)) +
+        coord_flip() +
+        theme_bw() +
+        theme(legend.position='bottom') +
+        scale_y_continuous(label=scales::percent) +
+        expand_limits(y=c(0,max_x*1.15 + 0.01))
+    }
+  )
+
+#national_plots[[3]]
+
+PLOT_ORDER = c(4,5,1,2,3,6)
+
+fpng('national_plurality.png')
+print(
+  national_plots[[4]]
+)
+dev.off()
+
+fpng('national_runoff.png')
+print(
+  national_plots[[5]]
+)
+dev.off()
+
+fpng('national_borda.png')
+print(
+  national_plots[[1]]
+)
+dev.off()
+
+fpng('national_approval.png')
+print(
+  national_plots[[2]]
+)
+dev.off()
+
+fpng('national_disapproval.png')
+print(
+  national_plots[[3]]
+)
+dev.off()
+
+fpng('national_hybrid.png')
+print(
+  national_plots[[6]]
+)
+dev.off()
+
+# electoral college
+
+N_ELECTORAL_VOTES = 538
+
+electoral_approval = as_electoral(build_like_matrix, candy_df %>% select(3:90), key='likes_ranking')
+electoral_disapproval = as_electoral(build_like_matrix, candy_df %>% select(3:90), key='dislikes_ranking')
+electoral_approval_disapproval_hybrid = as_electoral(build_like_matrix, candy_df %>% select(3:90), key='likes_dislikes_ranking')
+
+electoral_borda_count = as_electoral(build_borda_count_matrix, candy_df %>% select(3:90))
+
+electoral_plurality = as_electoral(rank_iterate, candy_df %>% select(3:90), top_n=2, max_iter=1)
+
+electoral_instant_runoff = as_electoral(rank_iterate,candy_df %>% select(3:90, weight), top_n=2, max_iter=Inf)
+
+#combine
+electoral_combined = bind_rows(
+  electoral_plurality %>%mutate(voting_method='Plurality'),
+  electoral_instant_runoff %>% mutate(voting_method='Instant Runoff'),
+  electoral_borda_count %>% mutate(voting_method='Borda Count'),
+  electoral_approval %>% mutate(voting_method='Approval Voting'),
+  electoral_disapproval %>% mutate(voting_method='Disapproval Voting'),
+  electoral_approval_disapproval_hybrid %>% mutate(voting_method='Approval-Disapproval Hybrid Ranking')
+) %>%
+  mutate(
+    percent_electoral_votes = electoral_votes/538
+  )
+
+# plot
+for (method in unique(electoral_combined$voting_method)){
+  sub_df = electoral_combined %>%
+    filter(electoral_vote_ranking <= 6 & voting_method==method) %>%
+    arrange(-electoral_vote_ranking) %>%
+    mutate(
+      Candy = forcats::as_factor(Candy)
+    )
+
+  max_x = 538
+
+  if (grepl('hybrid',tolower(method))){
+    tsize = rel(0.63)
+  } else {
+    tsize=rel(0.85)
+  }
+
+  if (grepl('plurality',tolower(method))){
+    lsize=rel(0.6)
+  } else {
+    lsize=rel(0.85)
+  }
+
+  fpng(sprintf('electoral_%s.png', gsub(' |-','_',method %>% tolower())))
+  print(
+    ggplot(sub_df) +
+        geom_bar(aes(x=Candy, y=electoral_votes, fill=Candy), stat='identity') +
+        geom_label(aes(x=Candy, y=electoral_votes, label=paste0('#',electoral_vote_ranking)), hjust='left') +
+        scale_fill_manual('Candy', values=candy_colors) +
+        ylab(sprintf('Electoral College Votes')) +
+        ggtitle(sprintf('Favorite Candies in US Chosen by %s Using Electoral College', method)) +
+        coord_flip() +
+        theme_bw() +
+        theme(legend.position='bottom', title=element_text(size=tsize), legend.text = element_text(size=lsize)) +
+        scale_y_continuous(breaks=seq(0,550,50)) +
+        expand_limits(y=c(0,538))
+
+  )
+  dev.off()
+}
+
+
+# senatorial
+
+senatorial_approval = as_senatorial(build_like_matrix, candy_df %>% select(3:90), key='likes_ranking')
+senatorial_disapproval = as_senatorial(build_like_matrix, candy_df %>% select(3:90), key='dislikes_ranking')
+senatorial_approval_disapproval_hybrid = as_senatorial(build_like_matrix, candy_df %>% select(3:90), key='likes_dislikes_ranking')
+
+senatorial_borda_count = as_senatorial(build_borda_count_matrix, candy_df %>% select(3:90))
+
+senatorial_plurality = as_senatorial(rank_iterate, candy_df %>% select(3:90), top_n=2, max_iter=1)
+
+senatorial_instant_runoff = as_senatorial(rank_iterate,candy_df %>% select(3:90, weight), top_n=2, max_iter=Inf)
+
+
+#combine
+senatorial_combined = bind_rows(
+  senatorial_plurality %>%mutate(voting_method='Plurality'),
+  senatorial_instant_runoff %>% mutate(voting_method='Instant Runoff'),
+  senatorial_borda_count %>% mutate(voting_method='Borda Count'),
+  senatorial_approval %>% mutate(voting_method='Approval Voting'),
+  senatorial_disapproval %>% mutate(voting_method='Disapproval Voting'),
+  senatorial_approval_disapproval_hybrid %>% mutate(voting_method='Approval-Disapproval Hybrid Ranking')
+) %>%
+  mutate(
+    percent_senate_votes = senate_votes/100
+  )
+
+# plot
+for (method in unique(senatorial_combined$voting_method)){
+  sub_df = senatorial_combined %>%
+    filter(senate_vote_ranking <= 6 & voting_method==method) %>%
+    arrange(-senate_vote_ranking) %>%
+    mutate(
+      Candy = forcats::as_factor(Candy)
+    )
+
+  max_x = 100
+
+  if (grepl('plurality',tolower(method))){
+    lsize=rel(0.5)
+  } else {
+    lsize=rel(0.85)
+  }
+
+  if (grepl('hybrid|disapproval',tolower(method))){
+    tsize = rel(0.63)
+  } else {
+    tsize=rel(0.85)
+  }
+
+  fpng(sprintf('senatorial_%s.png', gsub(' |-','_',method %>% tolower())))
+  print(
+    ggplot(sub_df) +
+        geom_bar(aes(x=Candy, y=senate_votes, fill=Candy), stat='identity') +
+        geom_label(aes(x=Candy, y=senate_votes, label=paste0('#',senate_vote_ranking)), hjust='left') +
+        scale_fill_manual('Candy', values=candy_colors) +
+        ylab(sprintf('Senate Votes')) +
+        ggtitle(sprintf('Favorite Candies in US Chosen by %s Using Senate', method)) +
+        coord_flip() +
+        theme_bw() +
+        theme(legend.position='bottom', legend.text=element_text(size=lsize), title=element_text(size=tsize)) +
+      scale_y_continuous(breaks=seq(0,100,10)) +
+        expand_limits(y=c(0,100))
+
+  )
+  dev.off()
+}
+
+# statewise stats
+
+N_SENATE_SEATS = 100
+
+statewise_likemat = statewise(build_like_matrix, candy_df %>% select(3:90))
+
+statewise_borda_count = statewise(build_borda_count_matrix, candy_df %>% select(3:90))
+
+statewise_plurality = statewise(rank_iterate, candy_df %>% select(3:90), top_n=2, max_iter=1)
+
+statewise_instant_runoff = statewise(rank_iterate, candy_df %>% select(3:90), top_n=5, max_iter=Inf)
+
+
+# pre-load images
+dir.create('figure', showWarnings=FALSE)
+fpng <- function(path, ...) png(file.path('figure',path), res=200, width=1440,height=1080, ...)
+
+fpng('states_plurality.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_plurality %>% rename(state=State) %>% filter(runoff_ranking==1) %>% flag_ties(rank_col='runoff_ranking')) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Plurality (Popular) Vote')
+)
+dev.off()
+
+fpng('states_runoff.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_instant_runoff %>% rename(state=State) %>% filter(runoff_ranking==1) %>% flag_ties(rank_col='runoff_ranking')) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Instant Runoff Vote')
+)
+dev.off()
+
+fpng('states_borda.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_borda_count %>% rename(state=State) %>% filter(borda_ranking==1)%>% flag_ties(rank_col='borda_ranking')) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Borda Count')
+)
+dev.off()
+
+fpng('states_approval.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(likes_ranking==1)%>% flag_ties(rank_col='likes_ranking')) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Approval Vote')
+)
+dev.off()
+
+fpng('states_disapproval.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(dislikes_ranking==1)%>% flag_ties(rank_col='dislikes_ranking')) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Disapproval Vote')
+)
+dev.off()
+
+fpng('states_hybrid.png')
+
+print(
+plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(likes_dislikes_ranking==1)%>% flag_ties(rank_col='likes_dislikes_ranking')) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Approval-Disapproval Hybrid Ranking')
+)
+dev.off()
+
+# tiebreakers: way too messy right now to get a decent result
+if (FALSE){
+fpng('states_plurality_tiebreaker.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_plurality %>% rename(state=State) %>% filter(runoff_ranking==1) %>% flag_ties_nationalized(rank_col='runoff_ranking', tiebreaker_mat)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Plurality (Popular) Vote')
+)
+dev.off()
+
+fpng('states_runoff_tiebreaker.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_instant_runoff %>% rename(state=State) %>% filter(runoff_ranking==1) %>% flag_ties_nationalized(rank_col='runoff_ranking', tiebreaker_mat)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Instant Runoff Vote')
+)
+dev.off()
+
+fpng('states_borda_tiebreaker.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_borda_count %>% rename(state=State) %>% filter(borda_ranking==1)%>% flag_ties_nationalized(rank_col='borda_ranking', tiebreaker_mat)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Borda Count')
+)
+dev.off()
+
+fpng('states_approval_tiebreaker.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(likes_ranking==1)%>% flag_ties_nationalized(rank_col='likes_ranking', tiebreaker_mat)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Approval Vote')
+)
+dev.off()
+
+fpng('states_disapproval_tiebreaker.png')
+print(
+plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(dislikes_ranking==1)%>% flag_ties_nationalized(rank_col='dislikes_ranking', tiebreaker_mat)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Disapproval Vote')
+)
+dev.off()
+
+fpng('states_hybrid_tiebreaker.png')
+
+print(
+plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(likes_dislikes_ranking==1)%>% flag_ties_nationalized(rank_col='likes_dislikes_ranking', tiebreaker_mat)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Approval-Disapproval Hybrid Ranking')
+)
+dev.off()
+}
+
+#combined
+
+plot_list = list(
+  plot_usmap(region='states', values='Candy', data=statewise_plurality %>% rename(state=State) %>% filter(runoff_ranking==1)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Plurality (Popular) Vote'),
+  plot_usmap(region='states', values='Candy', data=statewise_instant_runoff %>% rename(state=State) %>% filter(runoff_ranking==1)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Instant Runoff Vote'),
+  plot_usmap(region='states', values='Candy', data=statewise_borda_count %>% rename(state=State) %>% filter(borda_ranking==1)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Borda Count'),
+  plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(likes_ranking==1)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Approval Vote'),
+  plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(dislikes_ranking==1)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Disapproval Vote'),
+  plot_usmap(region='states', values='Candy', data=statewise_likemat %>% rename(state=State) %>% filter(likes_dislikes_ranking==1)) + scale_fill_manual('Candy', values=candy_colors) + theme(legend.position='right') + ggtitle('Favorite Candy by State - Approval-Disapproval Hybrid Ranking')
+)
+
+statewise_all = bind_rows(
+  statewise_plurality %>% rename(state=State) %>% filter(runoff_ranking==1) %>%
+    mutate(voting_method='Plurality'),
+  statewise_instant_runoff %>% rename(state=State) %>% filter(runoff_ranking==1) %>%
+    mutate(voting_method='Instant Runoff'),
+  statewise_borda_count %>% rename(state=State) %>% filter(borda_ranking==1) %>%
+    mutate(voting_method='Borda Count'),
+  statewise_likemat %>% rename(state=State) %>% filter(likes_ranking==1) %>%
+    mutate(voting_method='Approval Voting'),
+  statewise_likemat %>% rename(state=State) %>% filter(dislikes_ranking==1) %>%
+    mutate(voting_method='Disapproval Voting'),
+  statewise_likemat %>% rename(state=State) %>% filter(likes_dislikes_ranking==1) %>%
+    mutate(voting_method='Approval-Disapproval Hybrid Ranking')
+)
+
+# I will instead create a tappable image that will cycle through different zones
+if (FALSE){
+plot_usmap(regions='states', values='Candy', data=statewise_all, group='voting_method') +
+  scale_fill_manual('Candy', values=candy_colors) + ggtitle('Favorite Candy by State Using {closest_state}') +
+  theme(legend.position='right') +
+  gganimate::transition_states(states=voting_method)
+
+gganimate::anim_save('figure/voting_methods_usmap.gif')
+}
+
+end.rcode-->
+
+
+
+<p id="intro"> In the United States, there are several different ways that people vote: </p>
+
+<ol>
+ <li> Popular (plurality) vote for most local, statewide, and federal elections </li>
+ <li> Ranked-choice voting is used by Maine for senate, house, and presidential elections. It is also used in limited capacities elsewhere in the US, mostly at a local level</li>
+</ol>
+
+<p> There are also some different ways that political representation is given at the federal level: </p>
+
+<ol>
+ <li> Each state gets exactly 2 senators, regardless of size </li>
+ <li> Each state gets Electoral College votes equal to the total number of senators and representatives for that state (and 3 for Washington DC, which doesn't have any senators and only has one, limited member of the House)</li>
+ <li> Districts within each state choose House representatives and, in a few cases, Electoral College electors
+</ol>
+
+<p> Almost everyone in the US is <span style="text-decoration:line-through;">probably</span> stressed right now about politics, so why not apply this math to something more fun: <span id="candy_span"Candy!</span></p>
+
+<h1 id="main"> What Candy would the United States Choose in an Election?</h1>
+
+<p> What candy would the US choose based on on different types of elections? I asked 545 different individuals in a survey across the United States what their favorite candies were in 2 different ways given a list of over 40 candies:</p>
+
+<ol>
+  <li> For each candy, indicate if you like, dislike, or have no opinion of the candy </li>
+  <li> Rank your top 5 candies </li>
+</ol>
+
+<p> With these two questions combined, in addition to the state and demographic information of each response, wecan look at how candies would be chosen given different voting methods and different types of representatio (popular, electoral college, and senate-based)
+
+<h1> Voting Algorithms </h1>
+<ul style="list-style-type:none;">
+<li> Plurality - only one vote per person. Winner is the one with the most votes </li>
+<li> Ranked-choice instant runoff - Individuals can rank their choices.  Winner is determined as follows:
+  <ol>
+    <li> The number of first-place votes for each candy (candy-date) is counted. </li>
+    <li> The candy/candies with the lowest number of votes are eliminated </li>
+    <li> Any votes that were lower-ranked than an eliminated candy on a ballot are shifted up </li>
+    <li> Repeat the above process until the appropriate number of winners (usually just 1) remain </li>
+  </ol>
+  </li>
+<li> Borda count - Individuals rank their choices. Each ranking adds a certain number of points. For this example, 1st place=5 points, 2nd 4, 3rd 3, 4th 2, and 5th 1. </li>
+<li> Approval voting - Individuals choose any number of candies they like. The candy with the most likes wins. </li>
+<li> Disapproval voting - Individuals choose any number of candies they dislike. The candy with the last dislikes wins </li>
+<li> Approval-disapproval hybrid - Individuals choose any number of candies they like and/or dislike. The largest difference between the likes and dislikes is the winner. I do not believe this is a very common method of voting. </p>
+</ul>
+
+<h2 id="tappable_image">Tap the map to cycle through results by voting method:</h2>
+
+<div id="us_maps_tap">
+  <img src="figure/states_plurality.png" id="us_maps_taps_img"  width="720px" height="540px"/>
+</div>
+
+<script>
+tap_state = 0;
+tap_images = [
+ 'figure/states_plurality.png',
+ 'figure/states_runoff.png',
+ 'figure/states_borda.png',
+ 'figure/states_approval.png',
+ 'figure/states_disapproval.png',
+ 'figure/states_hybrid.png'
+];
+
+
+
+// main image tap
+$(function() {
+ $('#us_maps_tap').click(function(){
+   tap_state = (tap_state + 1) % 6;
+   $("#us_maps_taps_img").attr('src',tap_images[tap_state]);
+   return false;
+ });
+});
+</script>
+
+<style>
+ /*prevent highlighting image*/
+ #us_maps_taps_img{
+    -khtml-user-select: none;
+    -o-user-select: none;
+    -moz-user-select: none;
+    -webkit-user-select: none;
+    user-select: none;
+ }
+</style>
+
+<!--
+<p style="color:darkgray; font-size:12px;"> Apologies to anyone who is colorblind for the confusing colors. The colors are meant to correspond roughly to either the candy or the packaging of the different types of candies, and there are a total of 28 distinct colors at the moment. If anyone has any suggestions for improving the above map, please let me know.</p-->
+
+<h2> Statewide Summary </h2>
+
+<p> As you can see from the above map, Reese's Peanut Butter Cups are the usual favorite among most in the united states when using plurality or instant runoff voting. There are a lot of ties due to the large number of candies listed, large number of states, and limited sample size.</p>
+
+<p> The borda count doesn't suffer from any ties in this case, as it creates a lot more variation, even with a small sample size. </p>
+
+<p> There are also a lot of ties for the approval and disapproval voting rankings. It is interesting, though, to see that Reese's Peanut Butter Cups are not usually the most popular in each state: Kit-Kat Bars and M&amp;Ms are.
+
+<h1> Overall Results </h1>
+
+<p> While the above is a bit messy because of a lot of ties, the overall results are more robust and tell an obvious picture.<p>
+
+<h2> National Results </h2>
+<p> The national-level results are likely the most accurate, as ties are not issues, and weighting can be done to achieve a proper estimate. Tap the image below to cycle through different methods. The instant runoff vote is animated to show the final 6 steps of the process, since votes are reallocated at each step.</p>
+
+<div id="national_tap">
+  <img src="figure/national_plurality.png" id="national_taps_img"  width="720px" height="540px"/>
+</div>
+
+
+<script>
+tap_national = 0;
+national_tap_images = [
+ 'figure/national_plurality.png',
+ 'figure/national_instant_runoff_anim.gif',
+ 'figure/national_borda.png',
+ 'figure/national_approval.png',
+ 'figure/national_disapproval.png',
+ 'figure/national_hybrid.png'
+];
+
+// main image tap
+$(function() {
+ $('#national_tap').click(function(){
+   tap_national = (tap_national + 1) % 6;
+   $("#national_taps_img").attr('src',national_tap_images[tap_national]);
+   return false;
+ });
+});
+</script>
+
+<style>
+ /*prevent highlighting image*/
+ #national_taps_img{
+    -khtml-user-select: none;
+    -o-user-select: none;
+    -moz-user-select: none;
+    -webkit-user-select: none;
+    user-select: none;
+ }
+</style>
+
+
+<h2> Electoral College Results</h2>
+
+<p> These results resemble the national results, since there is still a high correlation between electoral votes and the size of a state. Votes are currently divided evenly in the event of a tie. Tap the image below to cycle through different methods.</p>
+
+<div id="electoral_tap">
+  <img src="figure/electoral_plurality.png" id="electoral_taps_img"  width="720px" height="540px"/>
+</div>
+
+
+<script>
+tap_electoral = 0;
+electoral_tap_images = [
+ 'figure/electoral_plurality.png',
+ 'figure/electoral_instant_runoff.png',
+ 'figure/electoral_borda_count.png',
+ 'figure/electoral_approval_voting.png',
+ 'figure/electoral_disapproval_voting.png',
+ 'figure/electoral_approval_disapproval_hybrid_ranking.png'
+];
+
+// main image tap
+$(function() {
+ $('#electoral_tap').click(function(){
+   tap_electoral = (tap_electoral + 1) % 6;
+   $("#electoral_taps_img").attr('src',electoral_tap_images[tap_electoral]);
+   return false;
+ });
+});
+</script>
+
+<style>
+ /*prevent highlighting image*/
+ #electoral_taps_img{
+    -khtml-user-select: none;
+    -o-user-select: none;
+    -moz-user-select: none;
+    -webkit-user-select: none;
+    user-select: none;
+ }
+</style>
+
+
+<h2> Senatorial Results </h2>
+
+<p> These results are a lot more varied than the national results, since smaller states influence the results the same as larger states. Votes are currently divided evenly in the event of a tie. Tap the image below to cycle through different methods. </p>
+
+
+<div id="senatorial_tap">
+  <img src="figure/senatorial_plurality.png" id="senatorial_taps_img"  width="720px" height="540px"/>
+</div>
+
+
+<script>
+tap_senatorial = 0;
+senatorial_tap_images = [
+ 'figure/senatorial_plurality.png',
+ 'figure/senatorial_instant_runoff.png',
+ 'figure/senatorial_borda_count.png',
+ 'figure/senatorial_approval_voting.png',
+ 'figure/senatorial_disapproval_voting.png',
+ 'figure/senatorial_approval_disapproval_hybrid_ranking.png'
+];
+
+// main image tap
+$(function() {
+ $('#senatorial_tap').click(function(){
+   tap_senatorial = (tap_senatorial + 1) % 6;
+   $("#senatorial_taps_img").attr('src',senatorial_tap_images[tap_senatorial]);
+   return false;
+ });
+});
+</script>
+
+<style>
+ /*prevent highlighting image*/
+ #senatorial_taps_img{
+    -khtml-user-select: none;
+    -o-user-select: none;
+    -moz-user-select: none;
+    -webkit-user-select: none;
+    user-select: none;
+ }
+</style>
+
+
+<h1 id="methodology"> Sampling Methodology </h1>
+
+
+
+<p> <b> Sample Size:</b> 545 responses were collected, with at least 5 from each state.</p>
+
+
+<p><b> Time:</b> Responses were taking during the month of October 2020. </p>
+
+
+<p><b> Medium:</b> Responses were taken via a form in Google Forms. </p>
+
+
+<p><b> Survey Distribution:</b> Responses were primarily gathered from Reddit, Twitter, Facebook, and sharing via email/other messengers. Some responses were directed from LinkedIn, Pinterest, and other sources. Sampling on Twitter and Facebook targeted individuals more likely to be interested in Halloween, fall, candy, cooking, and baking. </p>
+
+
+<p> <b> Compensation:</b> Three random participants will receive $13 Amazon gift cards via email. </p>
+
+
+<p><b> Requirements:</b> Respondents must be ages 18+ and be a resident of the United States </p>
+
+
+<h1> Demographic Breakdown</h1>
+
+<p>The following visualizes the demographic breakdown of the sample: </p>
+
+<div id="demographics_div" style="display:block;margin:auto;">
+
+<!--begin.rcode demographic_stats, echo=FALSE, warnings=FALSE, message=FALSE, fig.width=6,fig.height=3
+
+# gender
+gender_summary = bind_rows(
+    candy_df %>% group_by(Gender) %>% summarize(count=n()) %>%
+      mutate(proportion=prop.table(count), source='Sample'),
+    data.frame(
+      Gender=names(gender_population),
+      count=unlist(gender_population),
+      source='United States Census Estimate'
+    ) %>%
+      mutate(proportion=prop.table(count))
+  )
+
+print(
+ggplot(gender_summary %>%mutate(Gender=forcats::fct_rev(Gender))) +
+    geom_bar(aes(x=Gender,  y=proportion, fill=source), stat='identity', position='dodge') +
+    scale_fill_manual('Source', values=c('Sample'='#FF1111', 'United States Census Estimate'='#1111FF')) +
+    ggtitle('Gender: Sample Population vs. United States Population') +
+    scale_y_continuous('Proportion', label=scales::percent) +
+  theme_bw() + coord_flip()
+)
+
+
+end.rcode-->
+
+<!--begin.rcode demographic_stats_age, echo=FALSE, warnings=FALSE, message=FALSE, fig.width=6,fig.height=4
+# age group
+age_group_summary = bind_rows(
+    candy_df %>% group_by(AgeGroup) %>% summarize(count=n()) %>%
+      mutate(proportion=prop.table(count), source='Sample'),
+    data.frame(
+      AgeGroup=names(age_group_population),
+      count=unlist(age_group_population),
+
+      source='United States Census Estimate'
+    ) %>%
+      mutate(proportion=prop.table(count))
+  )
+
+print(
+ggplot(age_group_summary %>%mutate(AgeGroup=forcats::fct_rev(AgeGroup))) +
+    geom_bar(aes(x=AgeGroup,  y=proportion, fill=source), stat='identity', position='dodge') +
+    scale_fill_manual('Source', values=c('Sample'='#FF1111', 'United States Census Estimate'='#1111FF')) +
+    ggtitle('Age Group: Sample Population vs. United States Population') +
+    scale_y_continuous('Proportion', label=scales::percent) + xlab('Age Group') +
+  theme_bw() + coord_flip()
+)
+end.rcode-->
+
+<!--begin.rcode demographic_stats_state, echo=FALSE, warnings=FALSE, message=FALSE, fig.width=6,fig.height=8.5
+# state
+
+state_summary = bind_rows(
+    candy_df %>% group_by(State) %>% summarize(count=n()) %>%
+      mutate(proportion=prop.table(count), source='Sample'),
+    data.frame(
+      State=names(state_populations),
+      count=unlist(state_populations),
+      source='United States Census Estimate'
+    ) %>%
+      mutate(proportion=prop.table(count))
+  ) %>%
+  filter(!grepl('other',tolower(State)))
+
+print(
+ggplot(state_summary %>%mutate(State=forcats::fct_rev(State))) +
+    geom_bar(aes(x=State,  y=proportion, fill=source), stat='identity', position='dodge') +
+    scale_fill_manual('Source', values=c('Sample'='#FF1111', 'United States Census Estimate'='#1111FF')) +
+    ggtitle('State: Sample Population vs. United States Population') +
+    scale_y_continuous('Proportion', label=scales::percent) +
+  theme_bw() + coord_flip()
+)
+end.rcode-->
+
+</div>
+
+<h1> Candy List </h1>
+
+<p> In case you were wondering what the comprehensive candy list is: 100 Grand; 3 Musketeers; Air Heads; Almond Joy; Blow Pops; Bubble Gum; Butterfingers; Candy Corn; Circus Peanuts; Cotton Candy; Cow Tails; Crunch Bar; Gummy Bears; Gummy Worms; Hershey's Chocolate Bar; Hershey's Kisses; Hot Tamales; Jelly Beans; Jolly Ranchers; Junior Mints; Kit-Kat Bar; Kit-Kat Bars, flavored (e.g., grape); Laffy Taffy; Lemonheads; Lifesavers; M&amp;Ms; Milk Duds; Milky Way; Nerds; Peanut M&amp;Ms; Reese's Peanut Butter Cups; Reese's Pieces; Rock Candy; Skittles; Smarties; Snickers; Sour Patch Kids; Starburst; Swedish Fish; Tootsie Pops; Tootsie Rolls; Twix; Twizzlers; Warheads</p>
+
+<h1 id="caveats"> Caveats </h1>
+
+<ul id="caveats_list">
+<li> For the first 8 responses, "Skittles" were not present in the ranked candies section. This was shortly fixed. </li>
+<li> Some individuals did not choose a 5th choice for candy due to the UI of Google Forms sometimes cutting off the column on mobile devices </li>
+<li> Although always allowed as a blank response, a "no opinion" column was added partway through the survey to demonstrate that a like or a dislike was not required for each candy </li>
+<li> Raking was used for weights, which counts towards national-level vote outcomes. I did not weight statewide (senatorial/Electoral College) votes, however, as I would need a much larger sample.</li>
+<li> Arguably, the national winner could be considered to add 1 vote to the senate, as the Vice President of the United States acts as a tiebreaker vote. This is not reflected in the above analysis. </li>
+<li> Some write-in candies were also collected, in case favorites were not represented in the list. A few examples that have multiple mentions are dark chocolate, Baby Ruth, Payday, Take 5, and Heath Bars. There were not any particularly common ones, though.</li>
+<li> "3 Musketeers" was misspelled as "Three Musketeers", which may have confused some individuals with the ordering.</li>
+<li> The "Other" gender group was estimated to be 0.6% of the total US population. If anyone has any input on how this should be done, see my <a href="https://stats.stackexchange.com/questions/493504/how-should-i-weight-the-other-gender-response-with-survey-data" target="_blank" id="stackexchange_stats_genderother_question_out">Statistics Stackexchange Question</a>.</li>
+</ul>
+
+<h1> Source Code </h1>
+
+<p> The current version of source code can be found in <a href="https://github.com/mcandocia/CandyRanking" id="github_candyranking_out" target="_blank">https://github.com/mcandocia/CandyRanking<a/>. The data will be updated
