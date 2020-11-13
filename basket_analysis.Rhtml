@@ -1,0 +1,380 @@
+<p id="survey_mention_p" style="background-color:#DEF; padding:4px; border-radius:1px;"> <b><i>If you would like to respond to the survey for a future update of this project, and other candy-related ones on this site, <a href="https://forms.gle/1k4UdBNn347GZjSG6" target="_blank" id="candy_survey_out">click here</a> to open a survey form. </i></b></p>
+
+
+
+
+<!--begin.rcode loadlib, echo=FALSE, warning=FALSE, message=FALSE
+
+library(tidyverse)
+library(wCorr)
+source('voting_functions.r')
+source('raking.r')
+source('constants.r')
+
+dir.create('figure_basket')
+bpng <- function(x, ...){
+  png(file.path(
+    'figure_basket',x
+  ),...)
+}
+end.rcode-->
+
+<!--begin.rcode setup, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE
+
+wcor <- function(x, ...){
+  xvars = names(x)
+  nvars = length(xvars)
+  cormat = matrix(nrow=nvars, ncol=nvars)
+  for (i in 1:(nvars-1)){
+    for (j in (i+1):nvars){
+      if (i == j){
+        cormat[i,j] = 1
+      } else{
+        cormat[i,j] = cormat[j,i] = weightedCorr(
+          x=x[,i,T],
+          y=x[,j,T],
+          ...
+        )
+      }
+    }
+  }
+  colnames(cormat) = rownames(cormat) = xvars
+  diag(cormat)=1
+  return(cormat)
+}
+
+
+candy_df = read_csv(
+  'data/candy_cleaned.csv'
+) %>%
+  rename_at(
+    vars(contains('Three Musketeers')),
+    function(x) gsub('Three','3', x)
+  )
+
+candy_df$weight = rake_data(
+  as.data.frame(candy_df),
+  c('Gender','AgeGroup','State'),
+  demographic_stats,
+  max_iter = 5,
+  verbose=F
+)
+
+# fix missing levels of rankings
+candy_df = shift_rankings(candy_df)
+
+# fill in (like = 6; none = 7, dislike = 8)
+filled_candy_df = candy_df
+
+rank_candies = gsub('Rank ', '', names(candy_df)[grepl('^Rank', names(candy_df))])
+
+for (candy in rank_candies){
+  v_rank = paste('Rank', candy)
+  v_like = paste('Like', candy)
+
+  filled_candy_df[,v_rank] = case_when(
+    !is.na(filled_candy_df[,v_rank,T]) ~ filled_candy_df[,v_rank,T],
+    is.na(filled_candy_df[,v_like,T]) ~ 7,
+    TRUE ~ 7 - filled_candy_df[,v_like,T]
+  )
+}
+
+p_cormat = wcor(
+  filled_candy_df %>%
+    select_at(vars(matches('^Rank'))) %>%
+    rename_all(function(x) gsub('Rank ','', x)),
+  weights=filled_candy_df$weight,
+  method='Pearson'
+)
+
+s_cormat = wcor(
+  filled_candy_df %>%
+    select_at(vars(matches('^Rank'))) %>%
+    rename_all(function(x) gsub('Rank ','', x)),
+  method='Spearman',
+  weights=filled_candy_df$weight
+)
+
+pc_cormat = wcor(
+  filled_candy_df %>%
+    select_at(vars(matches('^Rank'))) %>%
+    rename_all(function(x) gsub('Rank ','', x)),
+  method='Polychoric',
+  weights=filled_candy_df$weight
+)
+
+p_clusts = hclust(
+  as.dist(1-p_cormat),
+  method='ward.D2'
+)
+p_cuts = cutree(p_clusts, k=13)
+
+s_clusts = hclust(
+  as.dist(1-s_cormat),
+  method='ward.D2'
+)
+s_cuts = cutree(s_clusts, k=12)
+
+pc_clusts = hclust(
+  as.dist(1-pc_cormat),
+  method='ward.D2'
+)
+pc_cuts = cutree(pc_clusts, k=12)
+
+pc_cuts_wide = cutree(pc_clusts, k=5)
+
+#plot(ape::as.phylo(p_clusts), type='fan',
+#     tip.color=RColorBrewer::brewer.pal(8, 'Dark2')[(p_cuts %% 8 + 1)])
+
+#plot(ape::as.phylo(s_clusts), type='fan',
+#     tip.color=RColorBrewer::brewer.pal(8, 'Dark2')[(s_cuts %% 8 + 1)])
+
+# use polychoric (best for statistical case)
+#plot(ape::as.phylo(pc_clusts),
+#     tip.color=RColorBrewer::brewer.pal(8, 'Dark2')[(pc_cuts %% 8 + 1)])
+
+
+cor_df = bind_rows(
+  melt(p_cormat) %>% mutate(method='Pearson'),
+  melt(s_cormat) %>% mutate(method='Spearman'),
+  melt(pc_cormat) %>% mutate(method='Polychoric')
+) %>%
+  rename(
+    Candy1 = Var1, Candy2=Var2
+  ) %>%
+  mutate_at(1:2, function(x) gsub('Rank ', '', x)) %>%
+  mutate_at(
+    1:2,
+    function(x) factor(x, levels=rank_candies[pc_clusts$order])
+  )
+
+# for each candy, get order and group in DF
+# group by group, then calculate min and max of each group
+
+pc_groups = data.frame(
+  candies = rank_candies[pc_clusts$order]
+) %>%
+  mutate(
+    grp = pc_cuts[candies]
+  ) %>%
+  group_by(
+    grp
+  ) %>%
+  summarize(
+    min_candy=candies[1],
+    max_candy=candies %>% tail(1),
+    .groups='drop'
+  ) %>%
+  mutate_if(is.character, function(x) factor(x, levels=levels(cor_df$Candy1)))
+
+pc_groups_wide = data.frame(
+  candies = rank_candies[pc_clusts$order]
+) %>%
+  mutate(
+    grp = pc_cuts_wide[candies]
+  ) %>%
+  group_by(
+    grp
+  ) %>%
+  summarize(
+    min_candy=candies[1],
+    max_candy=candies %>% tail(1),
+    .groups='drop'
+  ) %>%
+  mutate_if(is.character, function(x) factor(x, levels=levels(cor_df$Candy1)))
+
+# figure out which candies are not desirable
+bad_freqs = filled_candy_df %>%
+  summarize_at(
+    vars(matches('Rank ')),
+    list(~weighted.mean((.)==8, weight) - weighted.mean((.)<=6, weight))
+  ) %>%
+  melt() %>%
+  transmute(
+    Candy=gsub('Rank ','', variable) %>% factor(levels=levels(cor_df$Candy1)),
+    value
+  ) %>%
+  filter(
+    value > 0
+  )
+good_freqs = filled_candy_df %>%
+  summarize_at(
+    vars(matches('Rank ')),
+    list(~weighted.mean((.)==8, weight) - weighted.mean((.)<=6, weight))
+  ) %>%
+  melt() %>%
+  transmute(
+    Candy=gsub('Rank ','', variable),
+    value=-value
+  )  %>%
+  arrange(
+    desc(value)
+  ) %>%
+  mutate(
+    Candy=forcats::as_factor(Candy),
+    Likeability = case_when(
+      value < -0.3 ~ 'Widely Disliked',
+      value < -0.05 ~ 'Slightly Disliked',
+      value < 0.05 ~ 'Neutral',
+      value < 0.3 ~ 'Slightly Liked',
+      TRUE ~ 'Well-Liked'
+    ) %>%
+      factor(levels=c('Well-Liked','Slightly Liked','Neutral','Slightly Disliked','Widely Disliked'))
+  )
+
+end.rcode-->
+
+
+<p> If you are trying to bundle candies together, how do you make sure that the recipient will enjoy most of the candies in it? First, you might want to choose more popular candies. Based on a survey I administered October 2020, below are the candies sorted by average likes minus average dislikes. See methodology <a href="https://maxcandocia.com/article/2020/Oct/28/us-candy-voting/#methodology" target="_blank" id="maxcandocia_us_candy_voting_id_methodology_out">this page</a> for methodology and sample description.</p>
+
+<!--begin.rcode likeability, echo=FALSE, warning=FALSE, message=FALSE, fig.width=8, fig.height=11, fig.path='figure_basket/'
+print(
+  ggplot(good_freqs %>% arrange(desc(value))) +
+  geom_bar(aes(x=Candy, y=value, fill=Likeability),
+           stat='identity') +
+  theme_bw() +
+  xlab('Candy') +
+  ylab('Like % - Disike %') +
+  ggtitle('Candies Arranged by Likeability in the US',
+          subtitle = 'based on percentage of individuals that like a candy minus \nthe percentage that dislike it') +
+  coord_flip() +
+  scale_fill_manual(
+    values=(hcl.colors(5, palette='Plasma') %>% rev())
+  ) +
+  scale_x_discrete(limits=rev(levels(good_freqs$Candy))) +
+  scale_y_reverse(label=scales::percent, breaks=seq(-0.6,1,0.2)) +
+  theme(
+    plot.subtitle=element_text(size=rel(0.65)),
+    plot.caption=element_text(hjust=0.5),
+    axis.text.y=element_text(size=rel(1.3))
+  ) +
+  labs(caption='source: https://maxcandocia.com/article/2020/Nov/13/candy-bundles') +
+    xlab('')
+)
+end.rcode-->
+
+<p> Any of the candies with yellow bars are safe choices, as are most of the orange. The ones with darker bars are more disliked and are not as recommended in general. </p>
+
+<h1> Bundling Candies </h1>
+
+<p> While the above graph shows what candies are most liked, it doesn't show which ones would go best together. To solve this problem, I look at the numeric correlations between individual rankings of the candies from each survey respondent.</p>
+
+
+<h2> Dendrogram View </h2>
+
+<p> A simple way of looking at the above data is by using a dendrogram (a tree-like diagram). Each of the branches of the tree groups the most similar candies together. Contiguous colors indicate a cluster (total of 12).
+
+<!--begin.rcode phylo_plot, echo=FALSE, warning=FALSE, message=FALSE, fig.width=8, fig.height=11, fig.path='figure_basket/'
+
+plot(
+  ape::as.phylo(pc_clusts),
+  tip.color=RColorBrewer::brewer.pal(8, 'Dark2')[(pc_cuts %% 8 + 1)],
+  main="Clusters of Candy by Likeability Correlations"
+)
+
+end.rcode-->
+
+<p> A few examples of candies that work well together: </p>
+<ul id="candy_combos_examples">
+ <li> Tootsie Rolls, Tootsie Pops, and Milk Duds </li>
+ <li>Kit-Kat Bars and Crunch Bars </li>
+ <li>Reese's Pieces and Reese's Peanut Butter Cups </li>
+</ul>
+
+<p> Bear in mind how well liked candies are before choosing them. For example, while candy corn and circus peanuts have a high correlation with each other, I would only bundle them together if I was intent on selling the circus peanuts, the most disliked candy. Candy corn is probably best left being sold on its own in any other case. </p>
+
+<h2> Correlation Matrix </h2>
+
+<p> A more complex way of looking at the data is by looking at the correlation matrix itself. See the description after the image for tips on how to interpret it. </p>
+
+<!--begin.rcode cormat, echo=FALSE, warning=FALSE, message=FALSE, fig.width=8, fig.height=9.5, fig.path='figure_basket/'
+print(
+  ggplot(cor_df %>% filter(method=='Polychoric')) +
+  geom_tile(
+    aes(x=Candy1, y=Candy2, fill=value)
+  ) +
+  scale_fill_gradientn(
+    'Correlation',
+    colors=cetcolor::cet_pal(7, 'cbd1'),
+    limits=c(-1,1)
+  ) +
+  geom_rect(
+    data=pc_groups,
+    aes(xmin=min_candy %>% as.numeric() - 0.5,
+        ymin=min_candy %>% as.numeric() - 0.5,
+        xmax=max_candy %>% as.numeric() + 0.5,
+        ymax=max_candy %>% as.numeric() + 0.5),
+    color='red',
+    fill=NA
+  ) +
+  geom_rect(
+    data=pc_groups_wide,
+    aes(xmin=min_candy %>% as.numeric() - 0.5,
+        ymin=min_candy %>% as.numeric() - 0.5,
+        xmax=max_candy %>% as.numeric() + 0.5,
+        ymax=max_candy %>% as.numeric() + 0.5),
+    color='purple',
+    fill=NA
+  ) +
+  geom_vline(data=pc_groups, aes(xintercept=min_candy %>% as.numeric() - 0.5),
+             color='black', lty='dashed', size=0.2) +
+  geom_hline(data=pc_groups, aes(yintercept=min_candy %>% as.numeric() - 0.5),
+             color='black', lty='dashed', size=0.2) +
+  theme_bw() +
+  theme(
+    axis.text.x=element_text(angle=90, hjust=1),
+    axis.text.y=element_text(size=rel(1.15)),
+    legend.position='bottom',
+    plot.caption=element_text(hjust=0.5)
+  ) +
+  xlab('') + ylab('') + ggtitle('Correlations of Candy Preferences') +
+  labs(caption='source: https://maxcandocia.com/article/2020/Nov/13/candy-bundles')
+)
+
+end.rcode-->
+
+<p> This graph is quite a bit to swallow, so here are a few guidelines:</p>
+
+<div id="cor_guidelines_div" style="padding:4px; background-color:#F4F4F4">
+<ol id="cor_guidelines">
+ <li> Darker gold color means the likeabilities of the two candies are highly correlated (e.g., 3 Musketeers and Milky Way) and could be paired together</li>
+ <li> Bluer colors mean they are inversely related, and probably shouldn't be paired together (e.g., Reese's Peanut Butter Cups and bubblegum)</li>
+ <li> The red boxes indicate a tight cluster, where many of the candies within it have strong correlations to each other </li>
+ <li> The purple boxes are looser clusters, where many candies have positive correlations to each other </li>
+</ol>
+</div>
+
+<p> As a matter of practicality, you would likely do the following when building a bundle: </p>
+
+<div id="choice_process_div" style="padding:4px; background-color:#DFE; font-weight:bold">
+<ol>
+ <li> Determine which candies are acceptable based on how well-liked they are </li>
+ <li> Use the dendrogram to come up with groups of candies that you think would go well together </li>
+ <li> Use the correlation matrix to verify that the correlations are high enough among the candies you've chosen for a particular bundle </li>
+</ol>
+</div>
+
+<h1 id="technical_details"> Technical Details </h1>
+
+<h2> Weighting </h2>
+<p> For the weighting of the models, I used raking across age group, gender, and US state. See <a href="https://maxcandocia.com/article/2018/Jun/24/survey-raking/" target="_blank" id="maxcandocia_raking_article_out">https://maxcandocia.com/article/2018/Jun/24/survey-raking/</a> for more details on raking. </p>
+
+<h2> Correlations </h2>
+<p> For the correlations, I used a weighted <a href="https://en.wikipedia.org/wiki/Polychoric_correlation" target="_blank" id="wiki_polychoric_correlation_out">polychoric correlation</a> with the following values for likeability based on responses: </p>
+
+<ul style="list-style:none" id="candy_score_def_ul">
+ <li> <b>1 - 5</b> - Ranked as 1 through 5, respectively, on survey</li>
+ <li> <b>6</b> - Marked as "liked" on survey, but not ranked </li>
+ <li> <b>7</b> - Marked as "no opinion" or left blank, and not ranked </li>
+ <li> <b>8</b> - Marked as "disliked" on survey </li>
+</ul>
+
+<h2> Clustering </h2>
+
+<p> I used the 'Ward.D2' method with hierarchical clustering, with <code>1-correlation</code> as the distance metric. </p>
+
+<h1> GitHub Code </h1>
+
+<p> The current version of source code can be found in <a href="https://github.com/mcandocia/CandyRanking" id="github_candyranking_out" target="_blank">https://github.com/mcandocia/CandyRanking<a/>. See <code>basket_analysis.r</code> for code specific to this project. The data will be updated once I have more thoroughly analyzed it.</p>
+
+

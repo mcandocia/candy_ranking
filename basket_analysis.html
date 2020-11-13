@@ -1,0 +1,81 @@
+<p id="survey_mention_p" style="background-color:#DEF; padding:4px; border-radius:1px;"> <b><i>If you would like to respond to the survey for a future update of this project, and other candy-related ones on this site, <a href="https://forms.gle/1k4UdBNn347GZjSG6" target="_blank" id="candy_survey_out">click here</a> to open a survey form. </i></b></p>
+
+
+
+<p> If you are trying to bundle candies together, how do you make sure that the recipient will enjoy most of the candies in it? First, you might want to choose more popular candies. Based on a survey I administered October 2020, below are the candies sorted by average likes minus average dislikes. See methodology <a href="https://maxcandocia.com/article/2020/Oct/28/us-candy-voting/#methodology" target="_blank" id="maxcandocia_us_candy_voting_id_methodology_out">this page</a> for methodology and sample description.</p>
+
+<div class="chunk" id="likeability"><div class="rimage default"><img src="figure_basket/likeability-1.png" title="plot of chunk likeability" alt="plot of chunk likeability" class="plot" /></div></div>
+
+<p> Any of the candies with yellow bars are safe choices, as are most of the orange. The ones with darker bars are more disliked and are not as recommended in general. </p>
+
+<h1> Bundling Candies </h1>
+
+<p> While the above graph shows what candies are most liked, it doesn't show which ones would go best together. To solve this problem, I look at the numeric correlations between individual rankings of the candies from each survey respondent.</p>
+
+
+<h2> Dendrogram View </h2>
+
+<p> A simple way of looking at the above data is by using a dendrogram (a tree-like diagram). Each of the branches of the tree groups the most similar candies together. Contiguous colors indicate a cluster (total of 12).
+
+<div class="chunk" id="phylo_plot"><div class="rimage default"><img src="figure_basket/phylo_plot-1.png" title="plot of chunk phylo_plot" alt="plot of chunk phylo_plot" class="plot" /></div></div>
+
+<p> A few examples of candies that work well together: </p>
+<ul id="candy_combos_examples">
+ <li> Tootsie Rolls, Tootsie Pops, and Milk Duds </li>
+ <li>Kit-Kat Bars and Crunch Bars </li>
+ <li>Reese's Pieces and Reese's Peanut Butter Cups </li>
+</ul>
+
+<p> Bear in mind how well liked candies are before choosing them. For example, while candy corn and circus peanuts have a high correlation with each other, I would only bundle them together if I was intent on selling the circus peanuts, the most disliked candy. Candy corn is probably best left being sold on its own in any other case. </p>
+
+<h2> Correlation Matrix </h2>
+
+<p> A more complex way of looking at the data is by looking at the correlation matrix itself. See the description after the image for tips on how to interpret it. </p>
+
+<div class="chunk" id="cormat"><div class="rimage default"><img src="figure_basket/cormat-1.png" title="plot of chunk cormat" alt="plot of chunk cormat" class="plot" /></div></div>
+
+<p> This graph is quite a bit to swallow, so here are a few guidelines:</p>
+
+<div id="cor_guidelines_div" style="padding:4px; background-color:#F4F4F4">
+<ol id="cor_guidelines">
+ <li> Darker gold color means the likeabilities of the two candies are highly correlated (e.g., 3 Musketeers and Milky Way) and could be paired together</li>
+ <li> Bluer colors mean they are inversely related, and probably shouldn't be paired together (e.g., Reese's Peanut Butter Cups and bubblegum)</li>
+ <li> The red boxes indicate a tight cluster, where many of the candies within it have strong correlations to each other </li>
+ <li> The purple boxes are looser clusters, where many candies have positive correlations to each other </li>
+</ol>
+</div>
+
+<p> As a matter of practicality, you would likely do the following when building a bundle: </p>
+
+<div id="choice_process_div" style="padding:4px; background-color:#DFE; font-weight:bold">
+<ol>
+ <li> Determine which candies are acceptable based on how well-liked they are </li>
+ <li> Use the dendrogram to come up with groups of candies that you think would go well together </li>
+ <li> Use the correlation matrix to verify that the correlations are high enough among the candies you've chosen for a particular bundle </li>
+</ol>
+</div>
+
+<h1 id="technical_details"> Technical Details </h1>
+
+<h2> Weighting </h2>
+<p> For the weighting of the models, I used raking across age group, gender, and US state. See <a href="https://maxcandocia.com/article/2018/Jun/24/survey-raking/" target="_blank" id="maxcandocia_raking_article_out">https://maxcandocia.com/article/2018/Jun/24/survey-raking/</a> for more details on raking. </p>
+
+<h2> Correlations </h2>
+<p> For the correlations, I used a weighted <a href="https://en.wikipedia.org/wiki/Polychoric_correlation" target="_blank" id="wiki_polychoric_correlation_out">polychoric correlation</a> with the following values for likeability based on responses: </p>
+
+<ul style="list-style:none" id="candy_score_def_ul">
+ <li> <b>1 - 5</b> - Ranked as 1 through 5, respectively, on survey</li>
+ <li> <b>6</b> - Marked as "liked" on survey, but not ranked </li>
+ <li> <b>7</b> - Marked as "no opinion" or left blank, and not ranked </li>
+ <li> <b>8</b> - Marked as "disliked" on survey </li>
+</ul>
+
+<h2> Clustering </h2>
+
+<p> I used the 'Ward.D2' method with hierarchical clustering, with <code>1-correlation</code> as the distance metric. </p>
+
+<h1> GitHub Code </h1>
+
+<p> The current version of source code can be found in <a href="https://github.com/mcandocia/CandyRanking" id="github_candyranking_out" target="_blank">https://github.com/mcandocia/CandyRanking<a/>. See <code>basket_analysis.r</code> for code specific to this project. The data will be updated once I have more thoroughly analyzed it.</p>
+
+
